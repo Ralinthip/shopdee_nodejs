@@ -581,25 +581,20 @@ app.delete('/api/employee/:id',
 /*############## PRODUCT ##############*/
 //List products
 app.get('/api/product',
-    function(req, res){             
-        const token = req.headers["authorization"].replace("Bearer ", "");
-            
-        try{
-            let decode = jwt.verify(token, SECRET_KEY);               
-            if(decode.positionID != 1 && decode.positionID != 2) {
-              return res.send( {'message':'คุณไม่ได้รับสิทธิ์ในการเข้าใช้งาน','status':false} );
-            }
-            
-            let sql = "SELECT * FROM product";            
-            db.query(sql, function (err, result){
-                if (err) throw err;            
-                res.send(result);
-            });      
-
-        }catch(error){
-            res.send( {'message':'โทเคนไม่ถูกต้อง','status':false} );
-        }
-        
+    function(req, res){        
+        const sql = "SELECT * FROM product";
+        db.query(sql, 
+                function(err, result) {
+                    if (err) throw err;
+                    
+                    if(result.length > 0){
+                        res.send(result);
+                    }else{
+                        res.send( {'message':'fail','status':false} );
+                    }
+                    
+                }                       
+            );
     }
 );
 
@@ -760,6 +755,263 @@ app.delete('/api/product/:id',
 );
 
 
+/*############## ORDER ##############*/
+//เพิ่มสินค้าเข้าตะกร้า
+app.post('/api/makeorder', (req, res) => {  
+    const { custID, productID, quantity, price } = req.body;
+  
+    //Select last order having status id as 0
+    let sql = 'SELECT orderID FROM orders WHERE custID = ? AND statusID = 0';
+    db.query(sql, [custID], (err, results) => {
+      if (err) throw err;
+      let orderID = '';
+      
+      if(results.length == 0) {
+        //Insert an order      
+        sql = 'INSERT INTO orders (custID,statusID)VALUES(?, 0)';
+        db.query(sql, [custID], (err, result) => {
+          if (err) throw err;    
+          orderID = result.insertId;
+  
+          //Insert an order detail
+          sql = 'INSERT INTO orderdetail VALUES(?, ?, ?, ?)';
+          db.query(sql, [orderID, productID, quantity, price ], (err, result) => {
+            if (err) throw err;
+          });
+  
+        });
+        
+  
+      }else{
+        orderID = results[0]['orderID'];
+        sql = 'SELECT COUNT(*) AS orderdetailcount ';
+        sql += 'FROM orderdetail ';
+        sql += 'WHERE orderID = ? AND productID = ?';
+        db.query(sql, [orderID, productID], (err, result) => {
+          if (err) throw err;
+  
+          if(result[0]['orderdetailcount'] == 0)//no-existing order detail
+          {
+              //Insert an order detail
+              sql = 'INSERT INTO orderdetail VALUES(?, ?, ?, ?)';
+              db.query(sql, [orderID, productID, quantity, price ], (err, result) => {
+                if (err) throw err;
+              });
+  
+          }else{
+              //Update an order detail
+              sql = 'UPDATE orderdetail ';
+              sql += 'SET quantity = quantity + ? ';
+              sql += 'WHERE orderID = ? AND productID = ?';            
+              db.query(sql, [quantity, orderID, productID], (err, result) => {
+                if (err) throw err;
+              });
+          }
+          
+        });
+      }
+  
+      res.send({'message':'success','status':true});
+    });
+  });
+  
+  //ยืนยันการสั่งซื้อ
+  app.post('/api/confirmorder', (req, res) => {  
+    const { orderID } = req.body;
+    const orderDate = getCurrentTime();
+  
+    let sql = 'UPDATE orders ';
+    sql += 'SET orderDate = ?, statusID = 1 ';
+    sql += 'WHERE orderID = ?';
+    db.query(sql, [orderDate, orderID], (err, result) => {
+      if (err) throw err;
+      res.send({'message':'success','status':true});
+    });
+  
+  });
+  
+  function getCurrentTime(){
+    const currentDate = new Date();
+    const year = currentDate.getFullYear();
+    const month = String(currentDate.getMonth() + 1).padStart(2, '0');
+    const day = String(currentDate.getDate()).padStart(2, '0');
+    const hours = String(currentDate.getHours()).padStart(2, '0');
+    const minutes = String(currentDate.getMinutes()).padStart(2, '0');
+    const seconds = String(currentDate.getSeconds()).padStart(2, '0');
+  
+    const formattedDateTime = year+'-'+month+'-'+day+' '+hours+':'+minutes+':'+seconds;;
+    return formattedDateTime;
+  }
+  
+  //แสดงข้อมูลการสั่งซื้อที่อยู่ในตะกร้า
+  app.get('/api/cart/:id', (req, res) => {
+  
+    let sql = 'SELECT orders.orderID, orderDate, shipDate, receiveDate, orders.custID, statusID,';
+    sql += 'customer.firstName,customer.lastName,customer.address,customer.mobilePhone,';
+    sql += 'SUM(orderdetail.quantity) AS totalQuantity,';
+    sql += 'SUM(orderdetail.quantity*orderdetail.price) AS totalPrice,';
+    sql += 'COUNT(orderdetail.orderID) AS itemCount ';
+    sql += 'FROM orders ';
+    sql += '    INNER JOIN customer ON customer.custID=orders.custID ';         
+    sql += '    INNER JOIN orderdetail ON orders.orderID=orderdetail.orderID ';
+    sql += 'WHERE orders.custID=?  AND orders.statusID=0 ';
+    sql += 'GROUP BY orders.orderID, orderDate, shipDate,';
+    sql += '    receiveDate, orders.custID, statusID,';
+    sql += '    customer.firstName,customer.lastName,customer.address,customer.mobilePhone';
+  
+    db.query(sql, [req.params.id], (err, results) => {
+      if (err) throw err;
+      res.json(results);
+    });
+  }); 
+  
+  //แสดงรายการประวัติการสั่งซื้อ
+  app.get('/api/history/:id', (req, res) => {
+  
+    let sql = 'SELECT orders.orderID, orderDate, shipDate, receiveDate, orders.custID, statusID,';
+    sql += 'customer.firstName,customer.lastName,';
+    sql += 'SUM(orderdetail.quantity) AS totalQuantity,';
+    sql += 'SUM(orderdetail.quantity*orderdetail.price) AS totalPrice ';
+    sql += 'FROM orders ';
+    sql += '    INNER JOIN customer ON customer.custID=orders.custID ';         
+    sql += '    INNER JOIN orderdetail ON orders.orderID=orderdetail.orderID ';
+    sql += 'WHERE orders.custID=?  AND orders.statusID<>0 ';
+    sql += 'GROUP BY orders.orderID, orderDate, shipDate,';
+    sql += '    receiveDate, orders.custID, statusID,';
+    sql += '    customer.firstName,customer.lastName ';
+    sql += 'ORDER BY orders.orderID DESC';
+  
+    db.query(sql, [req.params.id], (err, results) => {
+      if (err) throw err;
+      res.json(results);
+    });
+  }); 
+  
+  //แสดงข้อมูลการสั่งซื้อ ของรายการที่เลือก
+  app.get('/api/orderinfo/:id', (req, res) => {
+  
+    let sql = 'SELECT orders.orderID, orderDate, shipDate, receiveDate, orders.custID, statusID,';
+    sql += 'customer.firstName,customer.lastName,customer.address,customer.mobilePhone,';
+    sql += 'SUM(orderdetail.quantity) AS totalQuantity,';
+    sql += 'SUM(orderdetail.quantity*orderdetail.price) AS totalPrice ';
+    sql += 'FROM orders ';
+    sql += '    INNER JOIN customer ON customer.custID=orders.custID ';         
+    sql += '    INNER JOIN orderdetail ON orders.orderID=orderdetail.orderID ';
+    sql += 'WHERE orders.orderID=? ';
+    sql += 'GROUP BY orders.orderID, orderDate, shipDate,';
+    sql += '    receiveDate, orders.custID, statusID,';
+    sql += '    customer.firstName,customer.lastName,customer.address,customer.mobilePhone ';
+  
+    db.query(sql, [req.params.id], (err, results) => {
+      if (err) throw err;
+      res.json(results);
+    });
+  }); 
+  
+  //แสดงรายละเอียดการสั่งซื้อ
+  app.get('/api/orderdetail/:id', (req, res) => {
+  
+    let sql = 'SELECT orderdetail.*,product.productName ';
+    sql += 'FROM orderdetail ';
+    sql += '    INNER JOIN product ON orderdetail.productID = product.productID ';         
+    sql += 'WHERE orderid=? ';
+  
+    db.query(sql, [req.params.id], (err, results) => {
+      if (err) throw err;
+      res.json(results);
+    });
+  }); 
+  
+  
+  /*############## PAYMENT ##############*/
+  // payment
+  app.post('/api/payment', (req, res) => {  
+  
+    //save slip file
+    let fileName = "";
+    if (req?.files?.slipFile){
+      const imageFile = req.files.slipFile; // image file    
+      
+      fileName = imageFile.name.split(".");// file name
+      fileName = fileName[0] + Date.now() + '.' + fileName[1]; 
+  
+      const imagePath = path.join(__dirname, 'assets/payment', fileName); //image path
+  
+      fs.writeFile(imagePath, imageFile.data, (err) => {
+        if(err) throw err;
+      });
+      
+    }
+    
+    //insert payment data
+    const { orderID, price} = req.body;  
+    const sql = 'INSERT INTO payment(orderID, price, slipFile) VALUES (?, ?, ?)';
+    db.query(sql, [orderID, price, fileName], (err, result) => {
+      if (err) throw err;
+    });
+    
+    //update customer status
+    const sql_customer = 'UPDATE orders SET statusID = 2 WHERE orderID = ?';
+    db.query(sql_customer, [orderID], (err, result) => {
+      if (err) throw err;
+  
+      res.send({ 'message': 'success', 'status': true });
+    });  
+  });
+  
+  // show slip image
+  app.get('/assets/payment/:filename', (req, res) => {
+  
+    const filepath = path.join(__dirname, 'assets/payment', req.params.filename);  
+    res.sendFile(filepath);
+  });
+
+  
+/*############## DASHBOARD ##############*/
+//ยอดการสั่งซื้อรายเดือน (บาท)    
+app.get('/api/monthlySale/:id', (req, res) => {
+
+    const currentDate = new Date();
+    const year = currentDate.getFullYear();
+    
+    let sql = 'SELECT SUBSTRING(orders.orderDate,6,2) AS month,';
+    sql += 'SUM(orderdetail.quantity*orderdetail.price) AS totalAmount ';
+    sql += 'FROM product '
+    sql += 'INNER JOIN orderdetail ON product.productID=orderdetail.productID ';
+    sql += 'INNER JOIN orders ON orderdetail.orderID=orders.orderID ';
+    sql += 'WHERE orders.custID=? AND SUBSTRING(orderDate,1,4)=? ';
+    sql += 'GROUP BY SUBSTRING(orders.orderDate,6,2) ';
+    sql += 'ORDER BY SUBSTRING(orders.orderDate,6,2) ASC';
+  
+    db.query(sql, [req.params.id, year], (err, results) => {
+      if (err) throw err;
+      res.json(results);
+    });
+  });  
+  
+  //สินค้าที่มียอดการสั่งซื้อ 5 อันดับแรก (บาท)
+  app.get('/api/topFiveProduct/:id', (req, res) => {
+  
+    const currentDate = new Date();
+    const year = currentDate.getFullYear();
+    
+    let sql = 'SELECT product.productID, productname,';
+    sql += 'SUM(orderdetail.quantity*orderdetail.price) AS totalAmount ';
+    sql += 'FROM product '
+    sql += 'INNER JOIN orderdetail ON product.productID=orderdetail.productID ';
+    sql += 'INNER JOIN orders ON orderdetail.orderID=orders.orderID ';
+    sql += 'WHERE orders.custID=? AND SUBSTRING(orderDate,1,4)=? ';
+    sql += 'GROUP BY product.productID, productname ';
+    sql += 'ORDER BY SUM(orderdetail.quantity*orderdetail.price) DESC LIMIT 5';
+  
+    db.query(sql, [req.params.id, year], (err, results) => {
+      if (err) throw err;
+      res.json(results);
+    });
+  }); 
+
+
+/*############## WEB SERVER ##############*/  
 // Create an HTTPS server
 const httpsServer = https.createServer(credentials, app);
 app.listen(port, () => {
